@@ -8,6 +8,7 @@ export default function Gauge({ value = 0, max = 100, type = 'download', label =
   const offset = 754 - MAX_ARC * pct;
   const [c1, c2] = COLORS[type] || COLORS.download;
   const gradId = `gauge-grad-${type}`;
+  const displayVal = (typeof value === 'number' && isFinite(value) && value > 0) ? value.toFixed(1) : '0.00';
 
   return (
     <div className="relative w-[340px] h-[340px] flex items-center justify-center max-w-[90vw] aspect-square">
@@ -25,9 +26,12 @@ export default function Gauge({ value = 0, max = 100, type = 'download', label =
       </svg>
       <div className="relative z-10 text-center">
         <div className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-sp-t2 mb-1.5">{label}</div>
-        <div className="font-mono text-[3.8rem] font-bold leading-none tracking-tight gauge-text min-w-[160px]"
-          style={{ background: `linear-gradient(135deg, ${c1}, ${c2})` }}>
-          {value > 0 ? value.toFixed(1) : '0.00'}
+        <div className="font-mono text-[3.8rem] font-bold leading-none tracking-tight min-w-[160px]"
+          style={{
+            color: c1,
+            textShadow: `0 0 40px ${c1}44`
+          }}>
+          {displayVal}
         </div>
         <div className="text-sm text-sp-t2 font-medium mt-1.5">{unit}</div>
       </div>
