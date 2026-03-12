@@ -99,35 +99,44 @@ export async function measureDownload(server = 'auto', streams = 8, duration = 1
   }
 
   async function stream(id) {
-    while (shared.running) {
-      const elapsed = (performance.now() - shared.start) / 1000;
-      const speed = elapsed > 0 ? (shared.bytes * 8) / elapsed / 1e6 : 0;
-      try {
-        const r = await fetch(url + '?bytes=' + chunkSize(elapsed, speed) + '&_=' + Date.now() + '_' + id + '_' + Math.random(), { cache: 'no-store' });
-        if (!r.ok || !shared.running) break;
-        const reader = r.body?.getReader();
-        if (reader) {
-          while (shared.running) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            shared.bytes += value.byteLength;
+    try {
+      while (shared.running) {
+        const elapsed = (performance.now() - shared.start) / 1000;
+        const speed = elapsed > 0 ? (shared.bytes * 8) / elapsed / 1e6 : 0;
+        try {
+          const r = await fetch(url + '?bytes=' + chunkSize(elapsed, speed) + '&_=' + Date.now() + '_' + id + '_' + Math.random(), { cache: 'no-store' });
+          if (!r.ok || !shared.running) break;
+          const reader = r.body?.getReader();
+          if (reader) {
+            while (shared.running) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              shared.bytes += value.byteLength;
+            }
+          } else {
+            const buf = await r.arrayBuffer();
+            shared.bytes += buf.byteLength;
           }
-        } else {
-          const buf = await r.arrayBuffer();
-          shared.bytes += buf.byteLength;
+        } catch (e) {
+          if (!shared.running) break;
+          console.log(`[DL] Stream ${id} error:`, e.message);
+          await sleep(200);
         }
-      } catch {
-        if (!shared.running) break;
-        await sleep(100);
       }
-    }
+    } catch {}
   }
 
   // Warm-up
-  try { await fetch(url + '?bytes=10000&_=w' + Date.now(), { cache: 'no-store' }); } catch {}
+  try {
+    await Promise.race([
+      fetch(url + '?bytes=10000&_=w' + Date.now(), { cache: 'no-store' }),
+      sleep(3000)
+    ]);
+  } catch {}
 
   shared.start = performance.now();
-  for (let i = 0; i < streams; i++) stream(i);
+  const streamPromises = [];
+  for (let i = 0; i < streams; i++) streamPromises.push(stream(i));
 
   const iv = setInterval(() => {
     const elapsed = (performance.now() - shared.start) / 1000;
@@ -142,10 +151,17 @@ export async function measureDownload(server = 'auto', streams = 8, duration = 1
   shared.running = false;
   clearInterval(iv);
 
-  const elapsed = (performance.now() - shared.start) / 1000;
-  const overall = (shared.bytes * 8) / elapsed / 1e6;
+  await Promise.race([Promise.allSettled(streamPromises), sleep(3000)]);
 
-  // Trimmed stable average
+  const elapsed = (performance.now() - shared.start) / 1000;
+  if (shared.bytes === 0 || elapsed <= 0) {
+    console.log('[DL] No data transferred');
+    return 0;
+  }
+
+  const overall = (shared.bytes * 8) / elapsed / 1e6;
+  console.log(`[DL] Total: ${(shared.bytes / 1e6).toFixed(1)}MB in ${elapsed.toFixed(1)}s = ${overall.toFixed(1)} Mbps`);
+
   const stable = shared.samples.slice(Math.floor(shared.samples.length * 0.35));
   if (stable.length >= 3) {
     const s = [...stable].sort((a, b) => a - b);
@@ -159,7 +175,7 @@ export async function measureDownload(server = 'auto', streams = 8, duration = 1
 // ═══ UPLOAD ═══
 export async function measureUpload(server = 'auto', streams = 8, duration = 12000, onProgress) {
   const url = SERVERS[server]?.ul || SERVERS.auto.ul;
-  const shared = { bytes: 0, start: 0, running: true, samples: [] };
+  const shared = { bytes: 0, start: 0, running: true, samples: [], streamsDone: 0 };
 
   function makePayload(size) {
     const buf = new ArrayBuffer(size);
@@ -168,40 +184,65 @@ export async function measureUpload(server = 'auto', streams = 8, duration = 120
     return new Blob([buf]);
   }
 
+  // Pre-create payloads once (avoid GC pressure during test)
   const payloads = {
-    s: makePayload(500_000), m: makePayload(2_000_000),
-    l: makePayload(5_000_000), x: makePayload(10_000_000)
+    s: { blob: makePayload(500_000), size: 500_000 },
+    m: { blob: makePayload(2_000_000), size: 2_000_000 },
+    l: { blob: makePayload(5_000_000), size: 5_000_000 },
+    x: { blob: makePayload(10_000_000), size: 10_000_000 }
   };
 
   function getPayload(speed) {
-    if (speed > 200) return { blob: payloads.x, size: 10_000_000 };
-    if (speed > 80) return { blob: payloads.l, size: 5_000_000 };
-    if (speed > 20) return { blob: payloads.m, size: 2_000_000 };
-    return { blob: payloads.s, size: 500_000 };
+    if (speed > 200) return payloads.x;
+    if (speed > 80) return payloads.l;
+    if (speed > 20) return payloads.m;
+    return payloads.s;
   }
 
   async function stream(id) {
-    while (shared.running) {
-      const elapsed = (performance.now() - shared.start) / 1000;
-      const speed = elapsed > 0 ? (shared.bytes * 8) / elapsed / 1e6 : 0;
-      const { blob, size } = getPayload(speed);
-      try {
-        await fetch(url + '?_=' + Date.now() + '_' + id + '_' + Math.random(), { method: 'POST', body: blob, cache: 'no-store' });
-        if (!shared.running) break;
-        shared.bytes += size;
-      } catch {
-        if (!shared.running) break;
-        await sleep(100);
+    try {
+      while (shared.running) {
+        const elapsed = (performance.now() - shared.start) / 1000;
+        const speed = elapsed > 0 ? (shared.bytes * 8) / elapsed / 1e6 : 0;
+        const { blob, size } = getPayload(speed);
+        try {
+          const resp = await fetch(url + '?_=' + Date.now() + '_' + id + '_' + Math.random(), {
+            method: 'POST', body: blob, cache: 'no-store'
+          });
+          if (!shared.running) break;
+          if (resp.ok) {
+            shared.bytes += size;
+          }
+        } catch (e) {
+          if (!shared.running) break;
+          console.log(`[UL] Stream ${id} error:`, e.message);
+          await sleep(200);
+        }
       }
+    } finally {
+      shared.streamsDone++;
     }
   }
 
-  // Warm-up
-  try { await fetch(url + '?_=w' + Date.now(), { method: 'POST', body: makePayload(10000), cache: 'no-store' }); } catch {}
+  // Warm-up with error handling
+  try {
+    const warmBlob = makePayload(10000);
+    await Promise.race([
+      fetch(url + '?_=warmup' + Date.now(), { method: 'POST', body: warmBlob, cache: 'no-store' }),
+      sleep(3000)
+    ]);
+  } catch (e) {
+    console.log('[UL] Warm-up failed:', e.message);
+  }
 
+  // Launch streams
   shared.start = performance.now();
-  for (let i = 0; i < streams; i++) stream(i);
+  const streamPromises = [];
+  for (let i = 0; i < streams; i++) {
+    streamPromises.push(stream(i));
+  }
 
+  // Progress reporting interval
   const iv = setInterval(() => {
     const elapsed = (performance.now() - shared.start) / 1000;
     if (elapsed > 0.1) {
@@ -211,12 +252,28 @@ export async function measureUpload(server = 'auto', streams = 8, duration = 120
     }
   }, 250);
 
+  // Wait for test duration
   await sleep(duration);
   shared.running = false;
   clearInterval(iv);
 
+  // Give streams a moment to finish current request
+  await Promise.race([
+    Promise.allSettled(streamPromises),
+    sleep(3000) // max 3s grace period
+  ]);
+
+  // Calculate result
   const elapsed = (performance.now() - shared.start) / 1000;
+  if (shared.bytes === 0 || elapsed <= 0) {
+    console.log('[UL] No data transferred');
+    return 0;
+  }
+
   const overall = (shared.bytes * 8) / elapsed / 1e6;
+  console.log(`[UL] Total: ${(shared.bytes / 1e6).toFixed(1)}MB in ${elapsed.toFixed(1)}s = ${overall.toFixed(1)} Mbps`);
+
+  // Trimmed stable average
   const stable = shared.samples.slice(Math.floor(shared.samples.length * 0.35));
   if (stable.length >= 3) {
     const s = [...stable].sort((a, b) => a - b);
