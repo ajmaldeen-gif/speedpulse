@@ -67,56 +67,70 @@ export default function App() {
     setGrade({ grade: '—', color: '#3d4560', stabilityKey: 'fair' });
     let peak = 0;
 
-    // PING
-    setPhase('ping'); setPhaseIdx(0);
-    setGaugeLabel(t.latency); setGaugeUnit(t.ms); setGaugeType('ping');
-    const { ping, jitter, samples } = await measurePing(server, (val, all) => {
-      const avg = all.reduce((a, b) => a + b, 0) / all.length;
-      setGaugeVal(avg); setGaugeMax(200);
-      setPingData([...all]);
-    });
-    setResults(r => ({ ...r, ping: ping.toFixed(1), jitter: jitter.toFixed(1) }));
-    await new Promise(r => setTimeout(r, 300));
+    try {
+      // PING
+      setPhase('ping'); setPhaseIdx(0);
+      setGaugeLabel(t.latency); setGaugeUnit(t.ms); setGaugeType('ping');
+      const { ping, jitter, samples } = await measurePing(server, (val, all) => {
+        const avg = all.reduce((a, b) => a + b, 0) / all.length;
+        setGaugeVal(avg); setGaugeMax(200);
+        setPingData([...all]);
+      });
+      const safePing = isFinite(ping) ? ping : 0;
+      const safeJitter = isFinite(jitter) ? jitter : 0;
+      setResults(r => ({ ...r, ping: safePing.toFixed(1), jitter: safeJitter.toFixed(1) }));
+      await new Promise(r => setTimeout(r, 300));
 
-    // DOWNLOAD
-    setPhase('download'); setPhaseIdx(1);
-    setGaugeLabel(t.download); setGaugeUnit(t.mbps); setGaugeType('download');
-    peak = 0;
-    const dl = await measureDownload(server, STREAMS, 14000, (speed, arr) => {
-      peak = Math.max(peak, speed);
-      setGaugeVal(speed); setGaugeMax(Math.max(peak * 1.15, 50));
-      setDlData(arr);
-    });
-    setResults(r => ({ ...r, dl: dl.toFixed(1) }));
-    await new Promise(r => setTimeout(r, 300));
+      // DOWNLOAD
+      setPhase('download'); setPhaseIdx(1);
+      setGaugeLabel(t.download); setGaugeUnit(t.mbps); setGaugeType('download');
+      peak = 0;
+      const dl = await measureDownload(server, STREAMS, 14000, (speed, arr) => {
+        if (isFinite(speed)) {
+          peak = Math.max(peak, speed);
+          setGaugeVal(speed); setGaugeMax(Math.max(peak * 1.15, 50));
+          setDlData(arr);
+        }
+      });
+      const safeDl = isFinite(dl) ? dl : 0;
+      setResults(r => ({ ...r, dl: safeDl.toFixed(1) }));
+      await new Promise(r => setTimeout(r, 300));
 
-    // UPLOAD
-    setPhase('upload'); setPhaseIdx(2);
-    setGaugeLabel(t.upload); setGaugeUnit(t.mbps); setGaugeType('upload');
-    peak = 0;
-    const ul = await measureUpload(server, STREAMS, 12000, (speed, arr) => {
-      peak = Math.max(peak, speed);
-      setGaugeVal(speed); setGaugeMax(Math.max(peak * 1.15, 30));
-      setUlData(arr);
-    });
-    setResults(r => ({ ...r, ul: ul.toFixed(1) }));
-    await new Promise(r => setTimeout(r, 200));
+      // UPLOAD
+      setPhase('upload'); setPhaseIdx(2);
+      setGaugeLabel(t.upload); setGaugeUnit(t.mbps); setGaugeType('upload');
+      peak = 0;
+      const ul = await measureUpload(server, STREAMS, 12000, (speed, arr) => {
+        if (isFinite(speed)) {
+          peak = Math.max(peak, speed);
+          setGaugeVal(speed); setGaugeMax(Math.max(peak * 1.15, 30));
+          setUlData(arr);
+        }
+      });
+      const safeUl = isFinite(ul) ? ul : 0;
+      setResults(r => ({ ...r, ul: safeUl.toFixed(1) }));
+      await new Promise(r => setTimeout(r, 200));
 
-    // COMPLETE
-    setPhase('done'); setPhaseIdx(3);
-    setGaugeLabel(t.download); setGaugeUnit(t.mbps); setGaugeType('download');
-    setGaugeVal(dl); setGaugeMax(Math.max(dl * 1.15, 50));
+      // COMPLETE
+      setPhase('done'); setPhaseIdx(3);
+      setGaugeLabel(t.download); setGaugeUnit(t.mbps); setGaugeType('download');
+      setGaugeVal(safeDl); setGaugeMax(Math.max(safeDl * 1.15, 50));
 
-    const g = calculateGrade(dl, ul, ping, jitter);
-    setGrade(g);
+      const g = calculateGrade(safeDl, safeUl, safePing, safeJitter);
+      setGrade(g);
 
-    const now = new Date();
-    setHistory(h => [{
-      date: now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-      dl: dl.toFixed(1), ul: ul.toFixed(1), ping: ping.toFixed(1), jitter: jitter.toFixed(1),
-      grade: g.grade, isp: conn.isp
-    }, ...h].slice(0, 20));
+      const now = new Date();
+      setHistory(h => [{
+        date: now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        time: now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+        dl: safeDl.toFixed(1), ul: safeUl.toFixed(1), ping: safePing.toFixed(1), jitter: safeJitter.toFixed(1),
+        grade: g.grade, isp: conn.isp
+      }, ...h].slice(0, 20));
+
+    } catch (err) {
+      console.error('[SpeedPulse] Test error:', err);
+      setPhase('done'); setPhaseIdx(3);
+    }
 
     setTesting(false);
   }, [testing, server, conn.isp, t]);
